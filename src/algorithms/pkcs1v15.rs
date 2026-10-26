@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use digest::Digest;
 use pkcs8::AssociatedOid;
 use rand_core::CryptoRngCore;
-use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, ConstantTimeLess};
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 use zeroize::Zeroizing;
 
 use crate::errors::{Error, Result};
@@ -110,70 +110,6 @@ fn decrypt_inner(em: Vec<u8>, k: usize) -> Result<(u8, Vec<u8>, u32)> {
     index = u32::conditional_select(&0, &(index + 1), valid);
 
     Ok((valid.unwrap_u8(), em, index))
-}
-
-/// Implicit-rejection variant of [`pkcs1v15_encrypt_unpad`]: the countermeasure
-/// for the Bleichenbacher / Marvin timing oracle (RUSTSEC-2023-0071) that the
-/// crate documentation gestures at via a `decrypt_session_key` API which was
-/// never implemented.
-///
-/// Always returns exactly `out_len` bytes and never signals whether the
-/// padding was valid. The buffer starts as the caller-supplied random
-/// `fallback`; the recovered message overwrites it in constant time, one byte
-/// at a time over the whole encoded message, if — and only if — the padding
-/// is valid AND the recovered message length equals `out_len`. Every failure
-/// mode (bad padding, wrong message length) therefore produces output that
-/// is indistinguishable in shape from success: `out_len` bytes the caller
-/// cannot tell apart from a real session key without using them.
-#[inline]
-pub(crate) fn pkcs1v15_encrypt_unpad_implicit_rejection(
-    em: Vec<u8>,
-    k: usize,
-    out_len: usize,
-    fallback: &[u8],
-) -> Vec<u8> {
-    pkcs1v15_encrypt_unpad_implicit_rejection_observed(em, k, out_len, fallback).0
-}
-
-/// As [`pkcs1v15_encrypt_unpad_implicit_rejection`], but also returns the
-/// internal validity bit. Crate-internal only: this bit is precisely what
-/// implicit rejection exists to hide from callers, and it is exposed solely
-/// so the crate's own self-awareness layer (`rsa_layer`) can keep an honest
-/// private journal of what happened. It must never cross the public API.
-#[inline]
-pub(crate) fn pkcs1v15_encrypt_unpad_implicit_rejection_observed(
-    em: Vec<u8>,
-    k: usize,
-    out_len: usize,
-    fallback: &[u8],
-) -> (Vec<u8>, bool) {
-    debug_assert_eq!(fallback.len(), out_len);
-    debug_assert!(out_len + 11 <= k);
-
-    // decrypt_inner errors only when k < 11, a property of the key rather
-    // than of the ciphertext; treat it as invalid padding.
-    let (valid, em, index) = decrypt_inner(em, k).unwrap_or((0, vec![0u8; k], 0));
-    let index = index as u32;
-
-    // The recovered message length must equal the expected length, compared
-    // in constant time and folded into the same validity bit.
-    let msg_len = (k as u32).saturating_sub(index);
-    let ok = Choice::from(valid) & msg_len.ct_eq(&(out_len as u32));
-
-    // One scratch byte past the end so `pos` always addresses a valid slot:
-    // pos advances only when a byte is taken, and at most out_len bytes can
-    // be taken, so pos <= out_len at every write.
-    let mut buf = vec![0u8; out_len + 1];
-    buf[..out_len].copy_from_slice(fallback);
-    let mut pos = 0u32;
-    for (j, el) in em.iter().enumerate() {
-        let j = j as u32;
-        let take = ok & !j.ct_lt(&index) & j.ct_lt(&(index + out_len as u32));
-        buf[pos as usize].conditional_assign(el, take);
-        pos.conditional_assign(&(pos + 1), take);
-    }
-    buf.truncate(out_len);
-    (buf, ok.unwrap_u8() == 1)
 }
 
 #[inline]

@@ -232,8 +232,6 @@ pub mod oaep;
 pub mod pkcs1v15;
 pub mod pss;
 pub mod traits;
-#[cfg(feature = "sha2")]
-pub mod rsa_layer;
 
 mod dummy_rng;
 mod encoding;
