@@ -69,3 +69,13 @@ Instruments: `pk-memory memory rpg` (14 modules, 382 symbols, 756 edges, 14 capa
 **Dormant by design:** `src/hazmat.rs` (14 lines, a feature-gated re-export shim — hence RPG's 0 symbols there); the `#[deprecated] new_raw` alias (intentional compat surface); the six `tests/examples/*.pem` fixtures pk-memory residue flags for review (the crate's published test vectors, not live key material) plus a LICENSE-APACHE false-positive signal. All 14 RPG capabilities map to a module; none unlinked.
 
 **The patch's own wiring:** rsa_layer contributes 21 symbols, all internally resolved; its 5 public types (`SelfAwareDecryptor`, `ConsentGate`, `Origin`, `JournalEntry`, `Awareness`) show as orphans only because they are the new external API — the deliverable's surface, awaiting callers that by definition live outside this crate.
+
+## Review corrections — 2026-10-26 (post-publication)
+
+Three corrections from review, recorded rather than smoothed over:
+
+**Scope of the mitigation.** This patch ADDS an implicit-rejection API; it does not remove or repair the legacy `decrypt` API, which remains in the crate for compatibility and remains oracle-exposed at the API level: any caller whose observable behavior differs between its Ok and Err results recreates the Bleichenbacher/Marvin oracle regardless of this patch. The mitigation covers callers who migrate decryption of session keys to `decrypt_session_key`. Any wording elsewhere in this document implying the crate as a whole is "fixed" should be read with that scope.
+
+**Status: experimental mitigation, functionally tested — side-channel validation outstanding.** The 96/96 test suite establishes functional behavior (correct keys recovered; every malformed-ciphertext class returns indistinguishable Ok results of the right length). It does NOT establish timing or cache side-channel resistance: no dudect-style statistical timing measurement and no cache-access analysis has been performed. Until that validation exists, this is an experimental mitigation, not a proven closure of RUSTSEC-2023-0071.
+
+**Gather rewritten.** The implicit-rejection selection loop originally walked a write pointer through the output buffer, advancing only on taken bytes: constant-time in value, but the write-address pattern depended on padding validity (one slot rewritten when invalid; a sweep when valid). Review flagged this on 2026-10-26. The loop is now an oblivious full-matrix gather — every output slot is conditionally assigned from every input byte under a constant-time index comparison folded with the validity bit — so the memory access pattern is independent of validity by construction. The full suite re-verified after the rewrite: 96 passed, 0 failed.

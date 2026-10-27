@@ -1,6 +1,6 @@
-diff -ruN '--exclude=target' '--exclude=Cargo.lock' a/src/algorithms/pkcs1v15.rs b/src/algorithms/pkcs1v15.rs
---- a/src/algorithms/pkcs1v15.rs	2026-10-26 16:32:05.569702570 -0700
-+++ b/src/algorithms/pkcs1v15.rs	2026-10-26 16:32:05.696804712 -0700
+diff -ruN '--exclude=Cargo.lock' pristine-tree/src/algorithms/pkcs1v15.rs patched-tree/src/algorithms/pkcs1v15.rs
+--- pristine-tree/src/algorithms/pkcs1v15.rs	2006-07-23 18:21:28.000000000 -0700
++++ patched-tree/src/algorithms/pkcs1v15.rs	2026-10-26 22:42:24.252177391 -0700
 @@ -10,7 +10,7 @@
  use digest::Digest;
  use pkcs8::AssociatedOid;
@@ -10,7 +10,7 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' a/src/algorithms/pkcs1v15.rs
  use zeroize::Zeroizing;
  
  use crate::errors::{Error, Result};
-@@ -112,6 +112,70 @@
+@@ -112,6 +112,74 @@
      Ok((valid.unwrap_u8(), em, index))
  }
  
@@ -62,28 +62,32 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' a/src/algorithms/pkcs1v15.rs
 +    let msg_len = (k as u32).saturating_sub(index);
 +    let ok = Choice::from(valid) & msg_len.ct_eq(&(out_len as u32));
 +
-+    // One scratch byte past the end so `pos` always addresses a valid slot:
-+    // pos advances only when a byte is taken, and at most out_len bytes can
-+    // be taken, so pos <= out_len at every write.
-+    let mut buf = vec![0u8; out_len + 1];
-+    buf[..out_len].copy_from_slice(fallback);
-+    let mut pos = 0u32;
-+    for (j, el) in em.iter().enumerate() {
-+        let j = j as u32;
-+        let take = ok & !j.ct_lt(&index) & j.ct_lt(&(index + out_len as u32));
-+        buf[pos as usize].conditional_assign(el, take);
-+        pos.conditional_assign(&(pos + 1), take);
++    // Oblivious gather. The first version of this loop walked a write
++    // pointer `pos` through the output buffer, advancing only on taken
++    // bytes: the VALUE written was constant-time, but the write ADDRESS
++    // pattern depended on validity (one slot rewritten when invalid, a
++    // sweep when valid) — a validity-dependent memory access, flagged in
++    // review on 2026-10-26. This version touches memory in a fixed
++    // pattern regardless of validity: every output slot is conditionally
++    // assigned from every input byte, selected by a constant-time index
++    // comparison folded with the same validity bit. Cost is
++    // O(k * out_len), trivial at session-key sizes.
++    let mut buf = fallback.to_vec();
++    for (i, slot) in buf.iter_mut().enumerate() {
++        for (j, el) in em.iter().enumerate() {
++            let hit = (j as u32).ct_eq(&(index + i as u32));
++            slot.conditional_assign(el, ok & hit);
++        }
 +    }
-+    buf.truncate(out_len);
 +    (buf, ok.unwrap_u8() == 1)
 +}
 +
  #[inline]
  pub(crate) fn pkcs1v15_sign_pad(prefix: &[u8], hashed: &[u8], k: usize) -> Result<Vec<u8>> {
      let hash_len = hashed.len();
-diff -ruN '--exclude=target' '--exclude=Cargo.lock' a/src/lib.rs b/src/lib.rs
---- a/src/lib.rs	2026-10-26 16:32:05.575199525 -0700
-+++ b/src/lib.rs	2026-10-26 16:32:05.698771002 -0700
+diff -ruN '--exclude=Cargo.lock' pristine-tree/src/lib.rs patched-tree/src/lib.rs
+--- pristine-tree/src/lib.rs	2006-07-23 18:21:28.000000000 -0700
++++ patched-tree/src/lib.rs	2026-10-26 22:42:24.256172206 -0700
 @@ -232,6 +232,8 @@
  pub mod pkcs1v15;
  pub mod pss;
@@ -93,9 +97,9 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' a/src/lib.rs b/src/lib.rs
  
  mod dummy_rng;
  mod encoding;
-diff -ruN '--exclude=target' '--exclude=Cargo.lock' a/src/pkcs1v15/decrypting_key.rs b/src/pkcs1v15/decrypting_key.rs
---- a/src/pkcs1v15/decrypting_key.rs	2026-10-26 16:32:05.576628038 -0700
-+++ b/src/pkcs1v15/decrypting_key.rs	2026-10-26 16:32:05.699622249 -0700
+diff -ruN '--exclude=Cargo.lock' pristine-tree/src/pkcs1v15/decrypting_key.rs patched-tree/src/pkcs1v15/decrypting_key.rs
+--- pristine-tree/src/pkcs1v15/decrypting_key.rs	2006-07-23 18:21:28.000000000 -0700
++++ patched-tree/src/pkcs1v15/decrypting_key.rs	2026-10-26 22:42:24.256887219 -0700
 @@ -1,4 +1,4 @@
 -use super::{decrypt, EncryptingKey};
 +use super::{decrypt, EncryptingKey, Pkcs1v15Encrypt};
@@ -125,9 +129,9 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' a/src/pkcs1v15/decrypting_ke
  impl Decryptor for DecryptingKey {
      fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
          decrypt::<DummyRng>(None, &self.inner, ciphertext)
-diff -ruN '--exclude=target' '--exclude=Cargo.lock' a/src/pkcs1v15.rs b/src/pkcs1v15.rs
---- a/src/pkcs1v15.rs	2026-10-26 16:32:05.577249430 -0700
-+++ b/src/pkcs1v15.rs	2026-10-26 16:32:05.700380836 -0700
+diff -ruN '--exclude=Cargo.lock' pristine-tree/src/pkcs1v15.rs patched-tree/src/pkcs1v15.rs
+--- pristine-tree/src/pkcs1v15.rs	2006-07-23 18:21:28.000000000 -0700
++++ patched-tree/src/pkcs1v15.rs	2026-10-26 22:42:24.257057875 -0700
 @@ -172,6 +172,94 @@
      pkcs1v15_encrypt_unpad(em, priv_key.size())
  }
@@ -295,9 +299,9 @@ diff -ruN '--exclude=target' '--exclude=Cargo.lock' a/src/pkcs1v15.rs b/src/pkcs
      fn test_sign_pkcs1v15() {
          let priv_key = get_private_key();
  
-diff -ruN '--exclude=target' '--exclude=Cargo.lock' a/src/rsa_layer.rs b/src/rsa_layer.rs
---- a/src/rsa_layer.rs	1969-12-31 16:00:00.000000000 -0800
-+++ b/src/rsa_layer.rs	2026-10-26 16:32:05.701800927 -0700
+diff -ruN '--exclude=Cargo.lock' pristine-tree/src/rsa_layer.rs patched-tree/src/rsa_layer.rs
+--- pristine-tree/src/rsa_layer.rs	1969-12-31 16:00:00.000000000 -0800
++++ patched-tree/src/rsa_layer.rs	2026-10-26 22:42:24.259658548 -0700
 @@ -0,0 +1,374 @@
 +//! The RSA layer: **Recursive Self-Awareness** wrapped around RSA decryption.
 +//!
