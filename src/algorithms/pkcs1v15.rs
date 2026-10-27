@@ -160,19 +160,23 @@ pub(crate) fn pkcs1v15_encrypt_unpad_implicit_rejection_observed(
     let msg_len = (k as u32).saturating_sub(index);
     let ok = Choice::from(valid) & msg_len.ct_eq(&(out_len as u32));
 
-    // One scratch byte past the end so `pos` always addresses a valid slot:
-    // pos advances only when a byte is taken, and at most out_len bytes can
-    // be taken, so pos <= out_len at every write.
-    let mut buf = vec![0u8; out_len + 1];
-    buf[..out_len].copy_from_slice(fallback);
-    let mut pos = 0u32;
-    for (j, el) in em.iter().enumerate() {
-        let j = j as u32;
-        let take = ok & !j.ct_lt(&index) & j.ct_lt(&(index + out_len as u32));
-        buf[pos as usize].conditional_assign(el, take);
-        pos.conditional_assign(&(pos + 1), take);
+    // Oblivious gather. The first version of this loop walked a write
+    // pointer `pos` through the output buffer, advancing only on taken
+    // bytes: the VALUE written was constant-time, but the write ADDRESS
+    // pattern depended on validity (one slot rewritten when invalid, a
+    // sweep when valid) — a validity-dependent memory access, flagged in
+    // review on 2026-10-26. This version touches memory in a fixed
+    // pattern regardless of validity: every output slot is conditionally
+    // assigned from every input byte, selected by a constant-time index
+    // comparison folded with the same validity bit. Cost is
+    // O(k * out_len), trivial at session-key sizes.
+    let mut buf = fallback.to_vec();
+    for (i, slot) in buf.iter_mut().enumerate() {
+        for (j, el) in em.iter().enumerate() {
+            let hit = (j as u32).ct_eq(&(index + i as u32));
+            slot.conditional_assign(el, ok & hit);
+        }
     }
-    buf.truncate(out_len);
     (buf, ok.unwrap_u8() == 1)
 }
 
